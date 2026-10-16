@@ -1,0 +1,59 @@
+name: Email scheduler cron
+
+# Daily trigger for the Email Center drip scheduler. Replaces the Vercel
+# cron entry (not available on the user's plan). The endpoint is
+# self-contained: it auths with the CRON_SECRET bearer token and processes
+# whatever batches are due, so this workflow only has to GET one URL.
+#
+# Required repository secrets:
+#   CRON_SECRET          — same value as the CRON_SECRET server env var
+#   EMAIL_SCHEDULER_URL  — optional; defaults to
+#                          https://www.fiveforge.app/api/cron/email-scheduler
+#
+# Notes GitHub Actions specifics:
+#   * `schedule` runs on the DEFAULT branch (main) and in UTC.
+#   * GitHub may delay runs by minutes; exact separation is not guaranteed —
+#     fine for a daily drip, the runner is idempotent and in-flight guarded.
+#   * Scheduled workflows are automatically disabled after 60 days of
+#     repository inactivity — re-enable in the Actions tab if that happens.
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily
+  workflow_dispatch: {} # manual run for testing from the Actions tab
+
+concurrency:
+  group: email-scheduler-cron
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger the daily drip batch
+        env:
+          SCHEDULER_URL: ${{ secrets.EMAIL_SCHEDULER_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          URL="${SCHEDULER_URL:-https://www.fiveforge.app/api/cron/email-scheduler}"
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Repository secret CRON_SECRET is not set."
+            exit 1
+          fi
+
+          http_code=$(curl -sS -o /tmp/email-scheduler.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 480 \
+            "$URL")
+
+          echo "GET $URL -> HTTP $http_code"
+          cat /tmp/email-scheduler.json; echo
+
+          case "$http_code" in
+            200) exit 0 ;;
+            *) echo "::error::Email scheduler responded with HTTP $http_code"; exit 1 ;;
+          esac
